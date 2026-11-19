@@ -7,7 +7,7 @@
 // =====================================================================
 
 import {
-  doc, getDoc, setDoc, updateDoc, onSnapshot, deleteField,
+  doc, getDoc, setDoc, onSnapshot, runTransaction,
 } from 'firebase/firestore';
 import { db } from './firebase.js';
 import {
@@ -66,20 +66,34 @@ export function subscribeAll(callbacks) {
   return () => { u1(); u2(); u3(); };
 }
 
-// Atomic single-cell write for a player's hole
+// Atomic single-cell write for a player's hole.
+// Uses a Firestore transaction so two scorekeepers writing concurrently
+// cannot clobber each other — even for the same player on different holes,
+// or across players. Retries once on transient failure (network blip).
 export async function persistScoreCell(playerId, holeIdx, value) {
   if (!db) return { ok: false };
+  const run = async () => {
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(scoresRef());
+      const current = snap.data() || {};
+      const playerArr = current[playerId] ? [...current[playerId]] : Array(18).fill(null);
+      playerArr[holeIdx] = (value === '' || value == null) ? null : Number(value);
+      tx.update(scoresRef(), { [playerId]: playerArr });
+    });
+  };
   try {
-    // Read current to safely merge array
-    const snap = await getDoc(scoresRef());
-    const current = snap.data() || {};
-    const playerArr = current[playerId] ? [...current[playerId]] : Array(18).fill(null);
-    playerArr[holeIdx] = (value === '' || value == null) ? null : Number(value);
-    await updateDoc(scoresRef(), { [playerId]: playerArr });
+    await run();
     return { ok: true };
-  } catch (e) {
-    console.error('persistScoreCell', e);
-    return { ok: false, error: e };
+  } catch (e1) {
+    // Retry once after 500ms
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      await run();
+      return { ok: true };
+    } catch (e2) {
+      console.error('persistScoreCell', e2);
+      return { ok: false, error: e2 };
+    }
   }
 }
 

@@ -21,13 +21,36 @@ export default function App() {
   const [me, setMe]             = useState(null);
   const [view, setView]         = useState('boards');
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [showMePicker, setShowMePicker] = useState(false);
+  const [syncState, setSyncState] = useState('idle'); // idle | saving | saved | error | offline
+  const [isOnline, setIsOnline]   = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
 
   const focusedRef = useRef(0);
+  const syncTimerRef = useRef(null);
 
-  // --- Initial load ---
+  // --- Online / offline listener ---
+  useEffect(() => {
+    const onOnline  = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online',  onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online',  onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // --- Initial load (with timeout fallback) ---
   useEffect(() => {
     let cancelled = false;
+    // Safety: if load never completes, surface an error after 15s
+    const timeoutId = setTimeout(() => {
+      if (!cancelled && loading) {
+        setLoadError('Still waiting on Firebase. Check your internet connection and the Firebase env vars in Vercel.');
+        setLoading(false);
+      }
+    }, 15000);
     (async () => {
       setMe(loadMe());
       if (!isFirebaseConfigured) {
@@ -50,10 +73,13 @@ export default function App() {
         }
       } catch (e) {
         console.error('loadAll', e);
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoadError(`Couldn't reach Firebase: ${e?.message || 'unknown error'}`);
+          setLoading(false);
+        }
       }
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; clearTimeout(timeoutId); };
   }, []);
 
   // --- Real-time subscriptions ---
@@ -70,6 +96,16 @@ export default function App() {
     return unsub;
   }, [loading]);
 
+  // --- Reset focus counter on route change or tab becoming visible again ---
+  // This recovers from "stuck focus" if a user tapped an input then locked
+  // their phone / switched apps without the input firing blur.
+  useEffect(() => { focusedRef.current = 0; }, [view]);
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible') focusedRef.current = 0; };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
   // --- Mutators ---
   const updateScore = useCallback(async (playerId, holeIdx, value) => {
     // Optimistic local update
@@ -78,7 +114,12 @@ export default function App() {
       arr[holeIdx] = value === '' || value == null ? null : Number(value);
       return { ...prev, [playerId]: arr };
     });
-    await persistScoreCell(playerId, holeIdx, value);
+    setSyncState('saving');
+    const { ok } = await persistScoreCell(playerId, holeIdx, value);
+    setSyncState(ok ? 'saved' : 'error');
+    // Fade the "saved" badge after 1.4s
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => setSyncState(prev => prev === 'saved' ? 'idle' : prev), 1400);
   }, []);
 
   const updateMeta = useCallback(async (updater) => {
@@ -87,12 +128,14 @@ export default function App() {
       next = typeof updater === 'function' ? updater(prev) : updater;
       return next;
     });
-    if (next) await persistMeta(next);
+    if (next) {
+      try { await persistMeta(next); } catch (e) { console.error('persistMeta', e); }
+    }
   }, []);
 
   const updateSettings = useCallback(async (next) => {
     setSettings(next);
-    await persistSettings(next);
+    try { await persistSettings(next); } catch (e) { console.error('persistSettings', e); }
   }, []);
 
   const pickMe = useCallback((playerId) => {
@@ -128,6 +171,23 @@ export default function App() {
     );
   }
 
+  // --- Loading error screen ---
+  if (loadError) {
+    return (
+      <div style={styles.shell}>
+        <div style={{ padding: 24, maxWidth: 480, margin: '40px auto' }}>
+          <div style={{ fontFamily: 'Fraunces, serif', fontWeight: 700, fontSize: 22, color: C.red, marginBottom: 10 }}>
+            Can't reach the tournament database
+          </div>
+          <div style={{ fontSize: 13, color: C.inkSoft, lineHeight: 1.5, marginBottom: 18 }}>
+            {loadError}
+          </div>
+          <button onClick={() => window.location.reload()} style={styles.primaryBtn}>Try again</button>
+        </div>
+      </div>
+    );
+  }
+
   if (loading || !meta) {
     return (
       <div style={styles.shell}>
@@ -140,7 +200,7 @@ export default function App() {
 
   return (
     <div style={styles.shell}>
-      <Header myPlayer={myPlayer} onChangeMe={() => setShowMePicker(true)} />
+      <Header myPlayer={myPlayer} onChangeMe={() => setShowMePicker(true)} syncState={syncState} isOnline={isOnline} />
 
       {view === 'boards'   && <BoardsView   meta={meta} scores={scores} settings={settings} />}
       {view === 'scoring'  && <ScoringView  meta={meta} scores={scores} settings={settings} me={me} onScoreUpdate={updateScore} focusedHandlers={focusedHandlers} />}
@@ -180,6 +240,18 @@ export default function App() {
             boxShadow: `0 4px 12px ${C.greenDark}66`,
             cursor: 'pointer',
           }}>Tap to pick who you are</button>
+        </div>
+      )}
+
+      {/* Error toast on failed save */}
+      {syncState === 'error' && (
+        <div style={{
+          position: 'fixed', bottom: 80, left: '50%', transform: 'translateX(-50%)',
+          background: C.red, color: C.paper, padding: '10px 16px', borderRadius: 999,
+          fontFamily: 'Manrope, sans-serif', fontSize: 12, fontWeight: 600,
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)', zIndex: 30,
+        }}>
+          Score didn't save. Check connection & re-enter.
         </div>
       )}
     </div>

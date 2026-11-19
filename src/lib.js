@@ -1,19 +1,21 @@
 // =====================================================================
 // THE EJ INVITATIONAL — lib.js
-// One-round, 14-player, 3-tournament scoring library
+// One-round, 10-player, 3-tournament scoring library
 // =====================================================================
 
 export const COLLECTION = 'ej-2026';
 
 // ---- Schema version ----
-// v2 (2026-11): Anti-Shtick handicap reference changed from GROUP-low to
-// FIELD-low (Alex 6.2), matching Hit a House and Skins. This keeps strokes
-// consistent across all three tournaments — a group containing Alex is no
-// longer disadvantaged. Stroke dots on hole entry simplified to a single
-// green color (same strokes count for all 3 tournaments now).
-// v1 (2026-11): Initial build — single round at Higuera Golf Club, Punta
-// Mita, Mexico. White tees. Three simultaneous tournaments.
-export const SCHEMA_VERSION = 2;
+// v4 (2026-11): Reliability audit before go-live. Migration now also replaces
+// the players list (preserving handicap edits for players still in the field,
+// dropping removed players). Writes use a Firestore transaction so concurrent
+// scorekeepers can't clobber each other. Added sync status + offline badges
+// in the header and a loading-timeout error screen.
+// v3 (2026-11): Field reduced to 10 players in 3 groups. Max score capped at
+// NET quadruple bogey (gross cap = par + 4 + strokes on that hole).
+// v2 (2026-11): AS ref unified with HH/Skins to field-low (Alex 6.2).
+// v1 (2026-11): Initial build.
+export const SCHEMA_VERSION = 4;
 
 export const MAX_OVER_PAR = 4; // cap any one hole at par + 4
 
@@ -49,36 +51,29 @@ export function effectiveCourse(course = HIGUERA) {
   return { ...course, rating: tee.rating, slope: tee.slope };
 }
 
-// ---- Players (14 total, split into 4 groups) ----
+// ---- Players (10 total after cancellations, split into 3 groups) ----
 export const DEFAULT_PLAYERS = [
-  // Group 1
-  { id: 'ari',     name: 'Ari Lichtenberg', hcp: 17.8, groupId: 'g1' },
-  { id: 'jimmy',   name: 'Jimmy Hausberg',  hcp: 23.0, groupId: 'g1' },
-  { id: 'tom',     name: 'Tom Schiff',      hcp: 12.3, groupId: 'g1' },
-  { id: 'gary',    name: 'Gary Ross',       hcp: 26.6, groupId: 'g1' },
-  // Group 2
-  { id: 'peter',   name: 'Peter Rosen',     hcp: 20.0, groupId: 'g2' },
-  { id: 'jordan',  name: 'Jordan Bender',   hcp: 11.2, groupId: 'g2' },
-  { id: 'lisa',    name: 'Lisa Bender',     hcp: 23.0, groupId: 'g2' },
-  // Group 3
-  { id: 'jack',    name: 'Jack Ross',       hcp: 20.7, groupId: 'g3' },
-  { id: 'elijah',  name: 'Elijah Lichtenberg', hcp: 8.3, groupId: 'g3' },
-  { id: 'alex',    name: 'Alex Lichtenberg',   hcp: 6.2, groupId: 'g3' },
-  { id: 'charlie', name: 'Charlie Bogart',     hcp: 11.7, groupId: 'g3' },
-  // Group 4
-  { id: 'bo',      name: 'Bo Abrams',       hcp: 16.2, groupId: 'g4' },
-  { id: 'justin',  name: 'Justin Berman',   hcp: 33.0, groupId: 'g4' },
-  { id: 'davis',   name: 'Davis Dragovich', hcp: 20.0, groupId: 'g4' },
+  // Group 1 (foursome)
+  { id: 'elijah',  name: 'Elijah Lichtenberg', hcp: 8.3,  groupId: 'g1' },
+  { id: 'charlie', name: 'Charlie Bogart',     hcp: 11.7, groupId: 'g1' },
+  { id: 'alex',    name: 'Alex Lichtenberg',   hcp: 6.2,  groupId: 'g1' },
+  { id: 'jack',    name: 'Jack Ross',          hcp: 20.7, groupId: 'g1' },
+  // Group 2 (threesome)
+  { id: 'ari',     name: 'Ari Lichtenberg',    hcp: 17.8, groupId: 'g2' },
+  { id: 'gary',    name: 'Gary Ross',          hcp: 26.6, groupId: 'g2' },
+  { id: 'bo',      name: 'Bo Abrams',          hcp: 16.2, groupId: 'g2' },
+  // Group 3 (threesome)
+  { id: 'jordan',  name: 'Jordan Bender',      hcp: 11.2, groupId: 'g3' },
+  { id: 'lisa',    name: 'Lisa Bender',        hcp: 23.0, groupId: 'g3' },
+  { id: 'tom',     name: 'Tom Schiff',         hcp: 12.3, groupId: 'g3' },
 ];
 
 // ---- Groups (teams for the Anti-Shtick) ----
 // Each group is both a tee-time foursome AND the Anti-Shtick team.
-// groupShortName is used in compact leaderboard cells.
 export const DEFAULT_GROUPS = [
-  { id: 'g1', name: 'Group 1',   short: 'G1', teeTime: '1:00 PM' },
-  { id: 'g2', name: 'Group 2',   short: 'G2', teeTime: '1:10 PM' },
-  { id: 'g3', name: 'Group 3',   short: 'G3', teeTime: '1:20 PM' },
-  { id: 'g4', name: 'Group 4',   short: 'G4', teeTime: '1:30 PM' },
+  { id: 'g1', name: 'Group 1', short: 'G1', teeTime: '1:00 PM' },
+  { id: 'g2', name: 'Group 2', short: 'G2', teeTime: '1:10 PM' },
+  { id: 'g3', name: 'Group 3', short: 'G3', teeTime: '1:20 PM' },
 ];
 
 export const DEFAULT_SETTINGS = {
@@ -95,10 +90,14 @@ export function safeNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-export function capScore(raw, par) {
+// Cap NET at par + MAX_OVER_PAR (net quadruple bogey). The player's gross
+// is therefore capped at (par + 4 + strokes_received_on_this_hole), so a
+// player receiving a stroke on this hole can score one more gross than a
+// scratch player before being capped. Pass strokes=0 for a plain gross cap.
+export function capScore(raw, par, strokes = 0) {
   const n = safeNum(raw);
   if (n == null) return null;
-  return Math.min(n, par + MAX_OVER_PAR);
+  return Math.min(n, par + MAX_OVER_PAR + (strokes || 0));
 }
 
 // USGA Course Handicap formula, rounded to nearest whole stroke.
@@ -162,10 +161,11 @@ export function playerRoundTotals(player, playerScores, course, refHcp, allowanc
   const ch = adjustedCH(player.hcp, refHcp, c, allowance);
   let gross = 0, net = 0, played = 0;
   for (let i = 0; i < 18; i++) {
-    const s = capScore(playerScores?.[i], c.pars[i]);
+    const str = strokesOnHole(ch, c.sis[i]);
+    const s = capScore(playerScores?.[i], c.pars[i], str);
     if (s == null) continue;
     gross += s;
-    net   += s - strokesOnHole(ch, c.sis[i]);
+    net   += s - str;
     played++;
   }
   return { gross, net, played, ch };
@@ -227,9 +227,9 @@ export function computeAntiShtick(players, groups, scores, settings) {
     const par = course.pars[h];
     const groupResults = groupData.map(gd => {
       const nets = gd.members.map(p => {
-        const g = capScore((scores[p.id] || [])[h], par);
-        if (g == null) return null;
         const str = strokesOnHole(gd.chByPlayer[p.id], si);
+        const g = capScore((scores[p.id] || [])[h], par, str);
+        if (g == null) return null;
         return { playerId: p.id, gross: g, net: g - str, strokes: str };
       }).filter(Boolean);
       if (nets.length === 0) return { groupId: gd.group.id, best: null, bestBy: null, complete: false };
@@ -306,9 +306,10 @@ export function computeSkins(players, scores, settings) {
     const si = course.sis[h];
     const par = course.pars[h];
     const nets = players.map(p => {
-      const g = capScore((scores[p.id] || [])[h], par);
+      const str = strokesOnHole(chByPlayer[p.id], si);
+      const g = capScore((scores[p.id] || [])[h], par, str);
       if (g == null) return null;
-      return { playerId: p.id, gross: g, net: g - strokesOnHole(chByPlayer[p.id], si) };
+      return { playerId: p.id, gross: g, net: g - str };
     }).filter(Boolean);
 
     if (nets.length < 2) {
@@ -368,7 +369,10 @@ export function buildCSV(players, groups, scores) {
     const ch = adjustedCH(p.hcp, ref.hcp, course, 1.0);
     const t = playerRoundTotals(p, scores[p.id], course, ref.hcp, 1.0);
     const cols = [grp, p.name, p.hcp, ch,
-      ...Array.from({ length: 18 }, (_, i) => (scores[p.id] || [])[i] ?? ''),
+      ...Array.from({ length: 18 }, (_, i) => {
+        const str = strokesOnHole(ch, course.sis[i]);
+        return capScore((scores[p.id] || [])[i], course.pars[i], str) ?? '';
+      }),
       t.gross || '', t.net || ''];
     lines.push(cols.map(c => String(c).includes(',') ? `"${c}"` : c).join(','));
   });
@@ -388,15 +392,29 @@ export function downloadCSV(players, groups, scores) {
   URL.revokeObjectURL(url);
 }
 
-// Migrate meta if schema changes down the line
+// Migrate meta if schema changes. Preserves user handicap edits for players
+// who remain in the roster; drops players no longer in DEFAULT_PLAYERS;
+// adds any new players. Groups + course always refresh from defaults.
 export async function migrateMetaIfNeeded(meta, persistMetaFn) {
   if (!meta) return meta;
   const stored = meta._schemaVersion || 1;
   if (stored >= SCHEMA_VERSION) return meta;
+  // Preserve edited handicaps (and names) for surviving players
+  const existing = {};
+  (meta.players || []).forEach(p => { if (p?.id) existing[p.id] = p; });
+  const mergedPlayers = DEFAULT_PLAYERS.map(p => {
+    const prev = existing[p.id];
+    return {
+      ...p,
+      hcp:  prev && typeof prev.hcp === 'number' ? prev.hcp : p.hcp,
+      name: prev && typeof prev.name === 'string' && prev.name.trim() ? prev.name : p.name,
+    };
+  });
   const migrated = {
     ...meta,
-    course: HIGUERA,
-    groups: DEFAULT_GROUPS,
+    players: mergedPlayers,
+    course:  HIGUERA,
+    groups:  DEFAULT_GROUPS,
     _schemaVersion: SCHEMA_VERSION,
   };
   await persistMetaFn(migrated);

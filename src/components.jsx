@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   Trophy, Users, Edit3, X, ChevronLeft, ChevronRight, Star, User,
   Trash2, Plus, Settings as SettingsIcon, Download, Clipboard, BarChart3, Sun,
+  Wifi, WifiOff, Check, Loader2,
 } from 'lucide-react';
 import { C, styles, monoFamily } from './styles.js';
 import {
@@ -63,27 +64,53 @@ function PalmWatermark({ right = -20, top = -10, opacity = 0.08, size = 180 }) {
 // =====================================================================
 // HEADER
 // =====================================================================
-export function Header({ myPlayer, onChangeMe }) {
+export function Header({ myPlayer, onChangeMe, syncState = 'idle', isOnline = true }) {
+  // Status badge: "Live" when connected & idle, "Saving..." while writing,
+  // "Saved" briefly after success, "Offline" if browser reports no network.
+  let statusLabel = 'Live';
+  let StatusIcon  = Wifi;
+  let statusColor = C.gold;
+  if (!isOnline) { statusLabel = 'Offline'; StatusIcon = WifiOff; statusColor = '#ff8888'; }
+  else if (syncState === 'saving') { statusLabel = 'Saving…'; StatusIcon = Loader2; statusColor = C.gold; }
+  else if (syncState === 'saved')  { statusLabel = 'Saved';   StatusIcon = Check;    statusColor = C.gold; }
+  else if (syncState === 'error')  { statusLabel = 'Retry';   StatusIcon = WifiOff;  statusColor = '#ff8888'; }
+
   return (
     <div style={styles.header}>
       <PalmWatermark />
       <div style={{ position: 'relative', zIndex: 1 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* EJ Monogram */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {/* EJ Monogram */}
+            <div style={{
+              width: 36, height: 36,
+              background: C.gold,
+              color: C.greenDark,
+              fontFamily: 'Fraunces, serif',
+              fontWeight: 700,
+              fontSize: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              borderRadius: 8,
+              letterSpacing: '-0.02em',
+            }}>EJ</div>
+            <div>
+              <div style={styles.headerTitle}>The <span style={{ fontStyle: 'italic', color: C.gold }}>Invitational</span></div>
+              <div style={styles.headerSubtitle}>Higuera Golf Club · Punta Mita · Nov 19, 2026</div>
+            </div>
+          </div>
+          {/* Sync + connection badge */}
           <div style={{
-            width: 36, height: 36,
-            background: C.gold,
-            color: C.greenDark,
-            fontFamily: 'Fraunces, serif',
-            fontWeight: 700,
-            fontSize: 20,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            borderRadius: 8,
-            letterSpacing: '-0.02em',
-          }}>EJ</div>
-          <div>
-            <div style={styles.headerTitle}>The <span style={{ fontStyle: 'italic', color: C.gold }}>Invitational</span></div>
-            <div style={styles.headerSubtitle}>Higuera Golf Club · Punta Mita · Nov 19, 2026</div>
+            display: 'inline-flex', alignItems: 'center', gap: 4,
+            padding: '4px 8px', borderRadius: 999,
+            background: 'rgba(250, 247, 240, 0.12)',
+            border: `1px solid ${statusColor}`,
+            color: statusColor,
+            fontSize: 10, fontWeight: 700, fontFamily: 'Manrope, sans-serif',
+            letterSpacing: '0.04em',
+            whiteSpace: 'nowrap',
+          }}>
+            <StatusIcon size={10} />
+            {statusLabel}
           </div>
         </div>
         <button onClick={onChangeMe} style={styles.mePill}>
@@ -512,7 +539,6 @@ function HoleEntry({ group, members, meta, scores, settings, me, onBack, onScore
   const par = course.pars[hole];
   const si = course.sis[hole];
   const yards = course.yards[hole];
-  const max = par + MAX_OVER_PAR;
 
   // Single stroke count per player per hole — all three tournaments
   // (Hit a House, Anti-Shtick, Skins) now use field-low as the reference,
@@ -525,9 +551,6 @@ function HoleEntry({ group, members, meta, scores, settings, me, onBack, onScore
     });
     return out;
   }, [members, fieldRef, course, si]);
-
-  const groupScores = members.map(p => (scores[p.id] || []).filter(x => safeNum(x) != null).length);
-  const minThru = Math.min(...groupScores);
 
   return (
     <div style={styles.scrollBody}>
@@ -658,7 +681,9 @@ function PlayerHoleRow({ player, isMe, strokes, par, currentScore, onChange, foc
   const [local, setLocal] = useState(currentScore != null ? String(currentScore) : '');
   useEffect(() => { setLocal(currentScore != null ? String(currentScore) : ''); }, [currentScore]);
 
-  const max = par + MAX_OVER_PAR;
+  // Cap NET at par + 4 → gross cap is par + 4 + strokes received this hole.
+  // A player getting a stroke can score one more gross before being capped.
+  const max = par + MAX_OVER_PAR + (strokes || 0);
   const handleBlur = () => {
     focusedHandlers?.onBlur?.();
     if (local === '' || local == null) { onChange(null); return; }
@@ -732,7 +757,7 @@ export function PlayersView({ meta, settings, scores, onUpdatePlayer }) {
   return (
     <div style={styles.scrollBody}>
       <SectionTitle
-        eyebrow="Field · 14 Players"
+        eyebrow={`Field · ${meta.players.length} Players`}
         title="Players"
         subtitle="Edit indices · view live scorecards"
         icon={Users}
@@ -838,8 +863,8 @@ function ScorecardModal({ player, meta, scores, onClose }) {
   const rs = scores[player.id] || [];
   const holes = course.pars.map((par, i) => {
     const raw = safeNum(rs[i]);
-    const gross = raw != null ? capScore(raw, par) : null;
     const strokes = strokesOnHole(ch, course.sis[i]);
+    const gross = raw != null ? capScore(raw, par, strokes) : null;
     const net = gross != null ? gross - strokes : null;
     return { par, si: course.sis[i], gross, net, strokes };
   });

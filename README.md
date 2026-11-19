@@ -12,10 +12,9 @@ Real-time scoring app for the wedding golf tournament at **Higuera Golf Club, Pu
 
 | Time | Group | Players |
 |---|---|---|
-| 1:00 PM | Group 1 | Ari (17.8) · Jimmy (23.0) · Tom (12.3) · Gary (26.6) |
-| 1:10 PM | Group 2 | Peter (20.0) · Jordan (11.2) · Lisa (23.0) |
-| 1:20 PM | Group 3 | Jack (20.7) · Elijah (8.3) · Alex (6.2) · Charlie (11.7) |
-| 1:30 PM | Group 4 | Bo (16.2) · Justin (33.0) · Davis (20.0) |
+| 1:00 PM | Group 1 | Elijah (8.3) · Charlie (11.7) · Alex (6.2) · Jack (20.7) |
+| 1:10 PM | Group 2 | Ari (17.8) · Gary (26.6) · Bo (16.2) |
+| 1:20 PM | Group 3 | Jordan (11.2) · Lisa (23.0) · Tom (12.3) |
 
 ## Scoring rules
 
@@ -24,7 +23,7 @@ Real-time scoring app for the wedding golf tournament at **Higuera Golf Club, Pu
 - Strokes applied to hardest holes first per the men's SI on the scorecard
 - **All three tournaments use the same reference:** field-low handicap (Alex, 6.2). Keeps strokes consistent so a group containing Alex isn't penalized.
 - **Skins:** ties = no skin · optional carryover (toggle in Setup)
-- Max score per hole: **par + 4**, auto-capped on entry
+- Max score per hole: **net quadruple bogey** — gross is capped at `par + 4 + strokes received this hole`, auto-capped on entry. (So a player getting a stroke on a hole can score one more gross than a scratch player before being capped.)
 
 Score dots on hole entry:
 - 🟢 Green dot per stroke the player receives this hole (applies to all 3 tournaments)
