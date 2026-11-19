@@ -42,11 +42,13 @@ export default function App() {
   }, []);
 
   // --- Initial load (with timeout fallback) ---
+  // Use a ref flag so the 15s timeout closure checks LIVE load state,
+  // not the stale `loading` captured at mount.
+  const loadedRef = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    // Safety: if load never completes, surface an error after 15s
     const timeoutId = setTimeout(() => {
-      if (!cancelled && loading) {
+      if (!cancelled && !loadedRef.current) {
         setLoadError('Still waiting on Firebase. Check your internet connection and the Firebase env vars in Vercel.');
         setLoading(false);
       }
@@ -58,7 +60,9 @@ export default function App() {
           setMeta({ players: DEFAULT_PLAYERS, groups: DEFAULT_GROUPS, course: HIGUERA, _schemaVersion: SCHEMA_VERSION });
           setSettings(DEFAULT_SETTINGS);
           setScores({});
+          loadedRef.current = true;
           setLoading(false);
+          clearTimeout(timeoutId);
         }
         return;
       }
@@ -69,13 +73,16 @@ export default function App() {
           setMeta(migrated);
           setSettings({ ...DEFAULT_SETTINGS, ...(s || {}) });
           setScores(sc || {});
+          loadedRef.current = true;
           setLoading(false);
+          clearTimeout(timeoutId);
         }
       } catch (e) {
         console.error('loadAll', e);
         if (!cancelled) {
           setLoadError(`Couldn't reach Firebase: ${e?.message || 'unknown error'}`);
           setLoading(false);
+          clearTimeout(timeoutId);
         }
       }
     })();
